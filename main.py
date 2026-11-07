@@ -1,12 +1,12 @@
 # ═══════════════════════════════════════════════════════════════
-#   XOCDIA PREDICTOR - CHẴN/LẺ + VỊ
+#   XOCDIA PREDICTOR - CHẴN/LẺ + VỊ (VỊ KHỚP CỔNG CHÍNH)
 #   CRE @JOYBOY36VN
 #   t.me/Joyboy36vn
 # ═══════════════════════════════════════════════════════════════
 
 import json, os, time, random
 from datetime import datetime, timezone
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException
 import httpx
 
 URL = "https://wcl.tele68.com/v1/chanlefull/lite-sessions"
@@ -33,7 +33,6 @@ def _ket_qua_chuan(s):
     if do + trang == 4:
         return "chan" if do % 2 == 0 else "le"
 
-    # Thử parse dices nếu resultVi không đủ
     co = s.get("co") or []
     if isinstance(co, list) and len(co) == 4:
         do2 = sum(1 for d in co if str(d).upper() in ("DO","ĐỎ","RED","1"))
@@ -254,7 +253,7 @@ def predict(hist):
             "chi_tiet_heuristic": det}
 
 # ═══════════════════════════════════════════════════════════════
-#   CỔNG PHỤ – DỰ ĐOÁN VỊ
+#   CỔNG PHỤ – DỰ ĐOÁN VỊ (CHỈ KHI KHỚP CỔNG CHÍNH)
 # ═══════════════════════════════════════════════════════════════
 def _parse_vi(s):
     """Chuyển 'vi' / 'co' thành {'do':int,'trang':int} tổng = 4."""
@@ -288,37 +287,63 @@ def _parse_vi(s):
 def _la_cua_chan(p):
     return (p["do"], p["trang"]) in [(2,2),(4,0),(0,4)]
 
-def predict_vi(hist_vi, bet_threshold=3):
-    """hist_vi: list {'do','trang'} cũ -> mới. Trả về dict hoặc None."""
-    if not hist_vi:
+def predict_vi(hist_vi, cong_chinh=None, bet_threshold=3):
+    """
+    hist_vi: list {'do','trang'} cũ -> mới
+    cong_chinh: "CHẴN" | "LẺ" | None
+    Chỉ trả vị KHỚP với cổng chính:
+      - CHẴN -> chỉ tứ tử (4-0 / 0-4)
+      - LẺ   -> chỉ 1-3 / 3-1
+      - None -> không trả vị
+    """
+    if not hist_vi or not cong_chinh:
         return None
+
     last = hist_vi[-1]
     last5 = hist_vi[-5:]
 
-    # CỬA CHẴN – tứ tử (0-4 hoặc 4-0)
-    if last in ({"do":4,"trang":0}, {"do":0,"trang":4}):
-        return {"ten": "tứ tử đỏ và tứ tử trắng", "cua": ["4-0","0-4"], "loai": "CHẴN"}
-    if len(hist_vi) >= 3 and all(_la_cua_chan(p) for p in hist_vi[-3:]):
-        return {"ten": "tứ tử đỏ và tứ tử trắng", "cua": ["4-0","0-4"], "loai": "CHẴN"}
-    if len(hist_vi) >= bet_threshold:
-        recent = hist_vi[-bet_threshold:]
-        if all(p == {"do":4,"trang":0} for p in recent) or \
-           all(p == {"do":0,"trang":4} for p in recent):
+    # ═══════ CỬA CHẴN – CHỈ TỨ TỬ ═══════
+    if cong_chinh == "CHẴN":
+        if last in ({"do":4,"trang":0}, {"do":0,"trang":4}):
             return {"ten": "tứ tử đỏ và tứ tử trắng", "cua": ["4-0","0-4"], "loai": "CHẴN"}
+        if len(hist_vi) >= 3 and all(_la_cua_chan(p) for p in hist_vi[-3:]):
+            return {"ten": "tứ tử đỏ và tứ tử trắng", "cua": ["4-0","0-4"], "loai": "CHẴN"}
+        if len(hist_vi) >= bet_threshold:
+            recent = hist_vi[-bet_threshold:]
+            if all(p == {"do":4,"trang":0} for p in recent) or \
+               all(p == {"do":0,"trang":4} for p in recent):
+                return {"ten": "tứ tử đỏ và tứ tử trắng", "cua": ["4-0","0-4"], "loai": "CHẴN"}
+        return None
 
-    # CỬA LẺ – đếm 1-3 / 3-1 trong 5 tay
-    if len(last5) >= 5:
-        cnt_A = sum(1 for p in last5 if p == {"do":1,"trang":3})
-        cnt_B = sum(1 for p in last5 if p == {"do":3,"trang":1})
-        if cnt_A > cnt_B:
-            return {"ten": "1 đỏ 3 trắng", "cua": ["1-3"], "loai": "LẺ"}
-        if cnt_B > cnt_A:
-            return {"ten": "1 trắng 3 đỏ", "cua": ["3-1"], "loai": "LẺ"}
-        return random.choice([
-            {"ten": "1 đỏ 3 trắng", "cua": ["1-3"], "loai": "LẺ"},
-            {"ten": "1 trắng 3 đỏ", "cua": ["3-1"], "loai": "LẺ"},
-        ])
+    # ═══════ CỬA LẺ – CHỈ 1-3 / 3-1 ═══════
+    if cong_chinh == "LẺ":
+        if len(last5) >= 5:
+            cnt_A = sum(1 for p in last5 if p == {"do":1,"trang":3})
+            cnt_B = sum(1 for p in last5 if p == {"do":3,"trang":1})
+            if cnt_A > cnt_B:
+                return {"ten": "1 đỏ 3 trắng", "cua": ["1-3"], "loai": "LẺ"}
+            if cnt_B > cnt_A:
+                return {"ten": "1 trắng 3 đỏ", "cua": ["3-1"], "loai": "LẺ"}
+            return random.choice([
+                {"ten": "1 đỏ 3 trắng", "cua": ["1-3"], "loai": "LẺ"},
+                {"ten": "1 trắng 3 đỏ", "cua": ["3-1"], "loai": "LẺ"},
+            ])
+        return None
+
     return None
+
+def _vi_ten(vi_thuc):
+    """Chuyển {'do','trang'} thành tên cửa vị."""
+    if not vi_thuc:
+        return None
+    do, trang = vi_thuc["do"], vi_thuc["trang"]
+    if (do, trang) in [(4,0),(0,4)]:
+        return "tứ tử đỏ và tứ tử trắng"
+    if (do, trang) == (1,3):
+        return "1 đỏ 3 trắng"
+    if (do, trang) == (3,1):
+        return "1 trắng 3 đỏ"
+    return "2-2"
 
 # ───────────── ROUTES ─────────────
 @app.get("/dudoan")
@@ -332,17 +357,18 @@ async def dudoan():
     hist_vi = [v for v in (_parse_vi(s) for s in reversed(ss)) if v]
 
     r = predict(hist)
-    vi = predict_vi(hist_vi) if hist_vi else None
-    du_doan_vi = vi["ten"] if vi else None
 
     if not r:
         return {
             "cre": "CRE @JOYBOY36VN",
             "du_doan": None,
-            "du_doan_vi": du_doan_vi,
+            "du_doan_vi": None,
             "ly_do": "Hoà – bỏ ván",
             "phien_hien_tai": cur["id"],
         }
+
+    vi = predict_vi(hist_vi, cong_chinh=r["du_doan"]) if hist_vi else None
+    du_doan_vi = vi["ten"] if vi else None
 
     pid, t = cur["id"] + 1, datetime.now(timezone.utc).isoformat()
     db = _load()
@@ -372,50 +398,20 @@ async def dudoan():
         "thoi_gian": t,
     }
 
-@app.get("/lichsu")
-async def lichsu(limit: int = Query(20, ge=1, le=100), page: int = Query(1, ge=1)):
-    ss = sorted(await fetch_sessions(), key=lambda s: s["id"], reverse=True)
-    db = _load()
-    tong = len(ss)
-    so_trang = max(1, (tong + limit - 1) // limit)
-    items = ss[(page - 1) * limit: page * limit]
-
-    out = []
-    for s in items:
-        p = db.get(str(s["id"]))
-        kq = _L(s["kq_chuan"])
-        if p:
-            dung_icon = "✅" if p["du_doan"] == kq else "❌"
-        else:
-            dung_icon = None
-        out.append({
-            "id": s["id"],
-            "ket_qua": kq,
-            "vi": s["vi"],
-            "du_doan": p["du_doan"] if p else None,
-            "do_tin_cay": p["do_tin_cay"] if p else None,
-            "du_doan_vi": p.get("du_doan_vi") if p else None,
-            "dung": dung_icon,
-        })
-
-    return {
-        "cre": "CRE @JOYBOY36VN",
-        "tong_phien": tong,
-        "trang": page,
-        "so_trang": so_trang,
-        "phien_moi_nhat": ss[0]["id"] if ss else None,
-        "phien_cu_nhat": ss[-1]["id"] if ss else None,
-        "lich_su": out,
-    }
-
 @app.get("/thongke")
 async def thongke():
     ss = {s["id"]: s for s in await fetch_sessions()}
     db = _load()
+
+    # ═══ CỔNG CHÍNH ═══
     tong = dung = sai = 0
     conf = 0.0
-    ls = []
     st_d = st_s = 0
+    # ═══ CỔNG PHỤ VỊ ═══
+    vi_tong = vi_dung = vi_sai = 0
+    vi_st_d = vi_st_s = 0
+    # ═══ LỊCH SỬ ═══
+    ls = []
 
     for pid_str in sorted(db, key=int):
         pid = int(pid_str)
@@ -426,11 +422,23 @@ async def thongke():
         ok = p["du_doan"] == kq
         tong += 1
         conf += p.get("do_tin_cay", 0)
-
         if ok:
             dung += 1; st_d += 1; st_s = 0
         else:
             sai += 1; st_s += 1; st_d = 0
+
+        # Cổng phụ vị
+        du_doan_vi = p.get("du_doan_vi")
+        vi_thuc = _parse_vi(ss[pid])
+        vi_thuc_ten = _vi_ten(vi_thuc) if vi_thuc else None
+        vi_ok = None
+        if du_doan_vi and vi_thuc_ten:
+            vi_tong += 1
+            vi_ok = (du_doan_vi == vi_thuc_ten)
+            if vi_ok:
+                vi_dung += 1; vi_st_d += 1; vi_st_s = 0
+            else:
+                vi_sai += 1; vi_st_s += 1; vi_st_d = 0
 
         ls.append({
             "phien": pid,
@@ -438,18 +446,30 @@ async def thongke():
             "ket_qua": kq,
             "dung": "✅" if ok else "❌",
             "conf": p.get("do_tin_cay"),
-            "du_doan_vi": p.get("du_doan_vi"),
+            "du_doan_vi": du_doan_vi,
+            "vi_thuc": vi_thuc_ten,
+            "vi_dung": ("✅" if vi_ok else "❌") if vi_ok is not None else None,
         })
 
     return {
         "cre": "CRE @JOYBOY36VN",
-        "tong_so_du_doan": tong,
-        "so_dung": dung,
-        "so_sai": sai,
-        "ty_le_dung": round(dung / tong, 4) if tong else 0,
-        "do_tin_cay_trung_binh": round(conf / tong, 4) if tong else 0,
-        "chuoi_dung_hien_tai": st_d,
-        "chuoi_sai_hien_tai": st_s,
+        "cong_chinh": {
+            "tong_so_du_doan": tong,
+            "so_dung": dung,
+            "so_sai": sai,
+            "ty_le_dung": round(dung / tong, 4) if tong else 0,
+            "do_tin_cay_trung_binh": round(conf / tong, 4) if tong else 0,
+            "chuoi_dung_hien_tai": st_d,
+            "chuoi_sai_hien_tai": st_s,
+        },
+        "cong_phu_vi": {
+            "tong_so_du_doan": vi_tong,
+            "so_dung": vi_dung,
+            "so_sai": vi_sai,
+            "ty_le_dung": round(vi_dung / vi_tong, 4) if vi_tong else 0,
+            "chuoi_dung_hien_tai": vi_st_d,
+            "chuoi_sai_hien_tai": vi_st_s,
+        },
         "lich_su_gan_nhat": ls[-20:][::-1],
     }
 
