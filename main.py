@@ -280,6 +280,14 @@ async def lichsu(limit: int = Query(20, ge=1, le=100), page: int = Query(1, ge=1
     for s in items:
         p = db.get(str(s["id"]))
         kq = _L(s["kq"])
+        
+        # Sửa phần check đúng/sai thành icon
+        if p:
+            is_correct = p["du_doan"] == kq
+            dung_icon = "✅" if is_correct else "❌"
+        else:
+            dung_icon = None
+            
         out.append({
             "id": s["id"], 
             "ket_qua": kq, 
@@ -287,7 +295,7 @@ async def lichsu(limit: int = Query(20, ge=1, le=100), page: int = Query(1, ge=1
             "co": s["co"],
             "du_doan": p["du_doan"] if p else None,
             "do_tin_cay": p["do_tin_cay"] if p else None,
-            "dung": (p["du_doan"] == kq) if p else None
+            "dung": dung_icon
         })
         
     return {
@@ -328,7 +336,7 @@ async def thongke():
             "phien": pid, 
             "du_doan": p["du_doan"], 
             "ket_qua": kq,
-            "dung": ok, 
+            "dung": "✅" if ok else "❌",  # <-- Đã đổi sang icon
             "conf": p.get("do_tin_cay")
         })
         
