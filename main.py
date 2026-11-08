@@ -7,6 +7,7 @@
 import json, os, time, random
 from datetime import datetime, timezone
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 import httpx
 
 URL = "https://wcl.tele68.com/v1/chanlefull/lite-sessions"
@@ -16,15 +17,19 @@ _cache = {"data": None, "ts": 0}
 
 app = FastAPI(title="XocDia Predictor - CRE @JOYBOY36VN")
 
+# CẤU HÌNH CORS ĐỂ CHẠY TRÊN NETLIFY VÀ FILE HTML
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 # ═══════════════════════════════════════════════════════════════
 #   CHUẨN HOÁ KẾT QUẢ TỪ VỊ
 # ═══════════════════════════════════════════════════════════════
 def _ket_qua_chuan(s):
-    """
-    Tính chẵn/lẻ CHUẨN từ vị (số đồng đỏ).
-    Số đỏ chẵn (0,2,4) -> CHẴN, số đỏ lẻ (1,3) -> LẺ
-    Fallback resultTruyenThong nếu không có vi.
-    """
     vi = s.get("vi") or ""
     up = str(vi).upper()
     do = up.count("DO") + up.count("ĐỎ") + up.count("RED")
@@ -40,27 +45,41 @@ def _ket_qua_chuan(s):
 
     return s["kq"]
 
-# ───────────── FETCH ─────────────
+# ───────────── FETCH (ĐÃ TỐI ƯU CHỐNG CRASH) ─────────────
 async def fetch_sessions():
     if time.time() - _cache["ts"] < 3 and _cache["data"]:
         return _cache["data"]
-    async with httpx.AsyncClient(timeout=5) as c:
-        r = await c.get(URL, headers={"Cache-Control": "no-store"})
-        r.raise_for_status()
-        d = r.json()
-    sessions = d.get("list") or d.get("data") if isinstance(d, dict) else d
-    out = []
-    for s in (sessions or []):
-        item = {
-            "id": s["id"],
-            "kq": s["resultTruyenThong"],
-            "vi": s.get("resultVi", ""),
-            "co": s.get("dices", []),
-        }
-        item["kq_chuan"] = _ket_qua_chuan(item)
-        out.append(item)
-    _cache["data"], _cache["ts"] = out, time.time()
-    return out
+    
+    try:
+        async with httpx.AsyncClient(timeout=10) as c:
+            r = await c.get(URL, headers={
+                "Cache-Control": "no-store",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            })
+            r.raise_for_status()
+            d = r.json()
+            
+        sessions = d.get("list") or d.get("data") if isinstance(d, dict) else d
+        out = []
+        for s in (sessions or []):
+            item = {
+                "id": s["id"],
+                "kq": s["resultTruyenThong"],
+                "vi": s.get("resultVi", ""),
+                "co": s.get("dices", []),
+            }
+            item["kq_chuan"] = _ket_qua_chuan(item)
+            out.append(item)
+            
+        _cache["data"], _cache["ts"] = out, time.time()
+        return out
+        
+    except Exception as e:
+        print(f"Lỗi lấy dữ liệu từ tele68: {e}")
+        # Nếu có cache cũ thì trả về để duy trì hoạt động
+        if _cache["data"]:
+            return _cache["data"]
+        raise HTTPException(status_code=502, detail="Không thể kết nối đến máy chủ game")
 
 # ───────────── STORAGE ─────────────
 def _load():
@@ -256,7 +275,6 @@ def predict(hist):
 #   CỔNG PHỤ – DỰ ĐOÁN VỊ (CHỈ KHI KHỚP CỔNG CHÍNH)
 # ═══════════════════════════════════════════════════════════════
 def _parse_vi(s):
-    """Chuyển 'vi' / 'co' thành {'do':int,'trang':int} tổng = 4."""
     vi = s.get("vi")
     if isinstance(vi, list):
         do = sum(1 for v in vi if str(v).upper() in ("DO", "ĐỎ", "RED"))
@@ -288,21 +306,12 @@ def _la_cua_chan(p):
     return (p["do"], p["trang"]) in [(2,2),(4,0),(0,4)]
 
 def predict_vi(hist_vi, cong_chinh=None, bet_threshold=3):
-    """
-    hist_vi: list {'do','trang'} cũ -> mới
-    cong_chinh: "CHẴN" | "LẺ" | None
-    Chỉ trả vị KHỚP với cổng chính:
-      - CHẴN -> chỉ tứ tử (4-0 / 0-4)
-      - LẺ   -> chỉ 1-3 / 3-1
-      - None -> không trả vị
-    """
     if not hist_vi or not cong_chinh:
         return None
 
     last = hist_vi[-1]
     last5 = hist_vi[-5:]
 
-    # ═══════ CỬA CHẴN – CHỈ TỨ TỬ ═══════
     if cong_chinh == "CHẴN":
         if last in ({"do":4,"trang":0}, {"do":0,"trang":4}):
             return {"ten": "tứ tử đỏ và tứ tử trắng", "cua": ["4-0","0-4"], "loai": "CHẴN"}
@@ -315,7 +324,6 @@ def predict_vi(hist_vi, cong_chinh=None, bet_threshold=3):
                 return {"ten": "tứ tử đỏ và tứ tử trắng", "cua": ["4-0","0-4"], "loai": "CHẴN"}
         return None
 
-    # ═══════ CỬA LẺ – CHỈ 1-3 / 3-1 ═══════
     if cong_chinh == "LẺ":
         if len(last5) >= 5:
             cnt_A = sum(1 for p in last5 if p == {"do":1,"trang":3})
@@ -329,13 +337,10 @@ def predict_vi(hist_vi, cong_chinh=None, bet_threshold=3):
                 {"ten": "1 trắng 3 đỏ", "cua": ["3-1"], "loai": "LẺ"},
             ])
         return None
-
     return None
 
 def _vi_ten(vi_thuc):
-    """Chuyển {'do','trang'} thành tên cửa vị."""
-    if not vi_thuc:
-        return None
+    if not vi_thuc: return None
     do, trang = vi_thuc["do"], vi_thuc["trang"]
     if (do, trang) in [(4,0),(0,4)]:
         return "tứ tử đỏ và tứ tử trắng"
@@ -348,69 +353,75 @@ def _vi_ten(vi_thuc):
 # ───────────── ROUTES ─────────────
 @app.get("/dudoan")
 async def dudoan():
-    ss = sorted(await fetch_sessions(), key=lambda s: s["id"], reverse=True)
-    if len(ss) < 5:
-        raise HTTPException(400, {"cre": "CRE @JOYBOY36VN", "loi": "Cần >= 5 ván"})
+    try:
+        ss = sorted(await fetch_sessions(), key=lambda s: s["id"], reverse=True)
+        if len(ss) < 5:
+            raise HTTPException(400, {"cre": "CRE @JOYBOY36VN", "loi": "Cần >= 5 ván"})
 
-    cur = ss[0]
-    hist = list(reversed([s["kq_chuan"] for s in ss]))
-    hist_vi = [v for v in (_parse_vi(s) for s in reversed(ss)) if v]
+        cur = ss[0]
+        hist = list(reversed([s["kq_chuan"] for s in ss]))
+        hist_vi = [v for v in (_parse_vi(s) for s in reversed(ss)) if v]
 
-    r = predict(hist)
+        r = predict(hist)
 
-    if not r:
+        if not r:
+            return {
+                "cre": "CRE @JOYBOY36VN",
+                "du_doan": None,
+                "du_doan_vi": None,
+                "ly_do": "Hoà – bỏ ván",
+                "phien_hien_tai": cur["id"],
+            }
+
+        vi = predict_vi(hist_vi, cong_chinh=r["du_doan"]) if hist_vi else None
+        du_doan_vi = vi["ten"] if vi else None
+
+        pid, t = cur["id"] + 1, datetime.now(timezone.utc).isoformat()
+        db = _load()
+        db[str(pid)] = {
+            "du_doan": r["du_doan"],
+            "du_doan_vi": du_doan_vi,
+            "do_tin_cay": r["do_tin_cay"],
+            "thoi_gian": t,
+        }
+        _save(db)
+
         return {
             "cre": "CRE @JOYBOY36VN",
-            "du_doan": None,
-            "du_doan_vi": None,
-            "ly_do": "Hoà – bỏ ván",
+            "phien_du_doan": pid,
+            "du_doan": r["du_doan"],
+            "du_doan_vi": du_doan_vi,
+            "do_tin_cay": r["do_tin_cay"],
             "phien_hien_tai": cur["id"],
+            "ket_qua": _L(cur["kq_chuan"]),
+            "vi": cur["vi"],
+            "lich_su_gan_nhat": [
+                {"id": s["id"], "ket_qua": _L(s["kq_chuan"])}
+                for s in ss[:5]
+            ],
+            "chi_tiet_heuristic": r["chi_tiet_heuristic"],
+            "tong_hop": r["tong_hop"],
+            "thoi_gian": t,
         }
-
-    vi = predict_vi(hist_vi, cong_chinh=r["du_doan"]) if hist_vi else None
-    du_doan_vi = vi["ten"] if vi else None
-
-    pid, t = cur["id"] + 1, datetime.now(timezone.utc).isoformat()
-    db = _load()
-    db[str(pid)] = {
-        "du_doan": r["du_doan"],
-        "du_doan_vi": du_doan_vi,
-        "do_tin_cay": r["do_tin_cay"],
-        "thoi_gian": t,
-    }
-    _save(db)
-
-    return {
-        "cre": "CRE @JOYBOY36VN",
-        "phien_du_doan": pid,
-        "du_doan": r["du_doan"],
-        "du_doan_vi": du_doan_vi,
-        "do_tin_cay": r["do_tin_cay"],
-        "phien_hien_tai": cur["id"],
-        "ket_qua": _L(cur["kq_chuan"]),
-        "vi": cur["vi"],
-        "lich_su_gan_nhat": [
-            {"id": s["id"], "ket_qua": _L(s["kq_chuan"])}
-            for s in ss[:5]
-        ],
-        "chi_tiet_heuristic": r["chi_tiet_heuristic"],
-        "tong_hop": r["tong_hop"],
-        "thoi_gian": t,
-    }
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Lỗi tại /dudoan: {e}")
+        raise HTTPException(500, "Internal Server Error")
 
 @app.get("/thongke")
 async def thongke():
-    ss = {s["id"]: s for s in await fetch_sessions()}
-    db = _load()
+    try:
+        ss = {s["id"]: s for s in await fetch_sessions()}
+        db = _load()
+    except Exception:
+        raise HTTPException(500, "Không thể lấy dữ liệu thống kê lúc này")
 
-    # ═══ CỔNG CHÍNH ═══
     tong = dung = sai = 0
     conf = 0.0
     st_d = st_s = 0
-    # ═══ CỔNG PHỤ VỊ ═══
     vi_tong = vi_dung = vi_sai = 0
     vi_st_d = vi_st_s = 0
-    # ═══ LỊCH SỬ ═══
     ls = []
 
     for pid_str in sorted(db, key=int):
@@ -427,7 +438,6 @@ async def thongke():
         else:
             sai += 1; st_s += 1; st_d = 0
 
-        # Cổng phụ vị
         du_doan_vi = p.get("du_doan_vi")
         vi_thuc = _parse_vi(ss[pid])
         vi_thuc_ten = _vi_ten(vi_thuc) if vi_thuc else None
@@ -473,7 +483,6 @@ async def thongke():
         "lich_su_gan_nhat": ls[-20:][::-1],
     }
 
-# ⬇️ Đoạn chạy cho Render
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8000))
